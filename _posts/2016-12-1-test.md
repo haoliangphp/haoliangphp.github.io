@@ -1,0 +1,97 @@
+前些天要给服务器安装一个ftp服务，查询了一下网络资料，准备安装vsftpd，简单的说一下安装过程，很多部分内容都是网上搜索来的。
+
+1. 通过yum来安装vsftpd
+> [root@localhost ~]# yum -y install vsftpd
+
+2. 设置为开机启动
+> [root@localhost ~]# chkconfig vsftpd on
+
+3. 进行相关配置，配置修改在/etc/vsftpd/vsftpd.conf里面;
+> [root@localhost ~]# vim /etc/vsftpd/vsftpd.conf
+
+然后安装好vsftpd之后的配置才是重中之重
+
+····························我是一条调皮的分割线····························
+
+##### 因为ftp上传的内容是web前端的内容，放在nginx服务器下运行，需要 **www**(代码运行的用户就是www) 权限，所以我们这边不创建一个新的ftp用户来运行ftp的服务，而是使用虚拟用户
+
+	anonymous_enable=NO 设定不允许匿名访问
+	local_enable=YES 设定本地用户可以访问。注：如使用虚拟宿主用户，在该项目设定为NO的情况下所有虚拟用户将无法访问。
+	chroot_list_enable=YES 使用户不能离开主目录
+	xferlog_file=/var/log/vsftpd.log 设定vsftpd的服务日志保存路径。注意，该文件默认不存在。必须要手动touch出来
+	ascii_upload_enable=YES
+	ascii_download_enable=YES 设定支持ASCII模式的上传和下载功能。
+	pam_service_name=vsftpd PAM认证文件名。PAM将根据/etc/pam.d/vsftpd进行认证
+
+##### 以下这些是关于Vsftpd虚拟用户支持的重要CentOS FTP服务配置项目。默认vsftpd.conf中不包含这些设定项目，需要自己手动添加CentOS FTP服务配置。 
+
+	guest_enable=YES 设定启用虚拟用户功能。
+	guest_username=www 指定虚拟用户的宿主用户。
+	user_config_dir=/etc/vsftpd/vuser_conf 设定虚拟用户个人vsftp的CentOS FTP服务文件存放路径。存放虚拟用户个性的CentOS FTP服务文件(配置文件名=虚拟用户名)
+
+##### 进行认证：
+
+首先，安装Berkeley DB工具，很多人找不到db_load的问题就是没有安装这个包。
+
+> yum install db4 db4-utils
+
+然后，创建用户密码文本/etc/vsftpd/vuser_passwd.txt ，注意奇行是用户名，偶行是密码
+
+test
+
+123456
+
+接着，生成虚拟用户认证的db文件
+
+> db_load -T -t hash -f /etc/vsftpd/vuser_passwd.txt /etc/vsftpd/vuser_passwd.db
+
+随后，编辑认证文件/etc/pam.d/vsftpd，注释掉原来所有语句，再增加以下两句：
+
+> auth required pam_userdb.so db=/etc/vsftpd/vuser_passwd
+> 
+> account required pam_userdb.so db=/etc/vsftpd/vuser_passwd
+
+最后，创建虚拟用户个性CentOS FTP服务文件
+
+> mkdir /etc/vsftpd/vuser_conf/
+> 
+> vi /etc/vsftpd/vuser_conf/test（注：文件名等于vuser_passwd.txt里面的账户名，否则下面设置无效）
+
+内容如下：
+
+	local_root=/data/www/html 虚拟用户的根目录(根据实际修改)
+	write_enable=YES 可写
+	anon_umask=022 掩码
+	anon_world_readable_only=NO 
+	anon_upload_enable=YES 
+	anon_mkdir_write_enable=YES
+	anon_other_write_enable=YES
+	
+····························我是一条调皮的分割线····························
+#### 遇到的一些坑
+1. 连接的时候返回类似报错
+	vsftpd：500 OOPS: bad bool value in config file for: anonymous_enable
+	这种情况一般是参数配置的时候多加了空格，回去好好检查一下 /etc/vsftpd/vsftpd.conf 文件和 /etc/vsftpd/vuser_conf 下的虚拟个人用户配置文件**(ps.前后都不能有空格)**
+
+2. 新版vsftp的chroot设置问题 500 OOPS: vsftpd: refusing to run with writable root inside chroot()
+
+	为了避免一个安全漏洞，从 vsftpd 2.3.5 开始，chroot 目录必须不可写
+	
+	使用命令：
+	>  $ chmod a-w /home/user		user 为FTP所连接的目录
+	
+	本人使用如上方法之后仍然没有解决问题，修改之后虽然可以正常连接ftp服务了，但是上传文件仍然报错，估计是权限的写入问题，一番查找之后，终于查找到最终解决方案：
+	
+	>  $ vi /etc/vsftpd.conf
+	添加　allow_writeable_chroot=YES
+	
+	保存退出
+	重启vsftp服务，即可正常登录.
+	
+3. 关于vsftp出现Restarting vsftpd (via systemctl): Job for vsftpd.service failed because the control 的解决办法
+
+	刚刚在搭建ftp服务器时，在配置好一切的参数之后，在我重启时，出现了无法启动的错误，将配置文件改了好多次都更改不好，终于在经过一阵查资料后，终于将问题定位了出来
+	
+	出现错误的原因是：由于centos7中vsftp的配置文件默认将 listen_ipv6=YES 这一行没有注释掉，而我们目前的网络环境还不支持ipv6，从而导致出现错误无法启动，所以解决方法是将 listen_ipv6=YES更改为：listen_ipv6=NO，或将这一行注释掉
+
+	按上面的方法注释掉 listen_ipv6=YES后，成功启动vsftp
